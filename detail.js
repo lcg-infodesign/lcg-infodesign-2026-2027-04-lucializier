@@ -1,10 +1,9 @@
 /* =====================================================================
    DETTAGLIO – singolo fiume (p5.js v2)
    Legge ?id= dall'URL, filtra il dataset e mostra:
-     A) Corso d'acqua: spessore della linea = portata,
-        numero di rami verdi = affluenti (scala logaritmica)
-     B) Temperatura: barra min–max con marcatore della media
-     C) Posizione nel dataset: lunghezza, area, portata (rango su 100)
+     - spessore della linea = portata
+     - numero di rami verdi = affluenti (scala logaritmica)
+     - barra min–max con marcatore della media = temperatura
    Legenda in fondo alla pagina.
    ===================================================================== */
 
@@ -17,14 +16,17 @@ const COL = {
   green: '#78F55A'
 };
 
-const MARGIN   = 40;
-const MAX_W    = 1100;   // larghezza massima del canvas
-const CANVAS_H = 1060;
+const MARGIN     = 40;
+const TOP_OFFSET = 64;    // spazio riservato in alto per il link "Torna all'overview"
+const CONTENT_H  = 800;   // altezza del contenuto sotto il link
 const T_MIN = -25, T_MAX = 35;   // estremi della scala termica (°C)
 
 let all = [];        // tutti i fiumi
 let river = null;    // fiume selezionato (o null se ID non valido)
 let stats = {};      // min/max del dataset per le scale
+
+// Larghezza utile della finestra (esclude l'eventuale scrollbar verticale)
+function viewW() { return document.documentElement.clientWidth; }
 
 async function setup() {
   const table = await loadTable('assets/rivers.csv', ',', 'header');
@@ -52,39 +54,67 @@ async function setup() {
   const id = Number(params.get('id'));
   river = all.find(r => r.id === id) || null;
 
-  // Estremi del dataset per normalizzare i confronti
+  // Estremi del dataset per normalizzare le scale
   stats = {
-    len:  [min(all.map(r => r.length)),      max(all.map(r => r.length))],
-    area: [min(all.map(r => r.area)),        max(all.map(r => r.area))],
     q:    [min(all.map(r => r.discharge)),   max(all.map(r => r.discharge))],
     trib: [min(all.map(r => r.tributaries)), max(all.map(r => r.tributaries))]
   };
 
-  createCanvas(min(windowWidth, MAX_W), CANVAS_H);
+  // Canvas a tutta larghezza, posizionato in alto a sinistra
+  createCanvas(viewW(), CONTENT_H + TOP_OFFSET);
+  const c = document.querySelector('canvas');
+  c.style.position = 'absolute';
+  c.style.left = '0';
+  c.style.top = '0';
+  document.body.style.background = COL.bg;
+  document.body.style.margin = '0';
+
+  setupBackLink();
   textFont('system-ui, sans-serif');
   noLoop();   // pagina statica: disegno una volta (e al resize)
 }
 
+// Link "Torna all'overview": usa quello nell'HTML se c'è, altrimenti lo crea.
+// È posizionato nella fascia alta riservata (TOP_OFFSET), quindi non si sovrappone al titolo.
+function setupBackLink() {
+  let a = document.getElementById('back');
+  if (!a) {
+    a = document.createElement('a');
+    a.id = 'back';
+    a.href = 'index.html';
+    a.textContent = '← Torna all\'overview';
+    document.body.appendChild(a);
+  }
+  a.style.position = 'absolute';
+  a.style.top = '20px';
+  a.style.left = MARGIN + 'px';
+  a.style.zIndex = '10';
+  a.style.padding = '0';
+  a.style.font = '600 15px system-ui, sans-serif';
+  a.style.color = COL.cyan;
+  a.style.textDecoration = 'none';
+}
+
 function windowResized() {
-  resizeCanvas(min(windowWidth, MAX_W), CANVAS_H);
+  resizeCanvas(viewW(), CONTENT_H + TOP_OFFSET);
   redraw();
 }
 
 function draw() {
   background(COL.bg);
+  translate(0, TOP_OFFSET);   // tutto il contenuto parte sotto il link
 
   // ID mancante o non valido
   if (!river) {
     noStroke(); fill(COL.text);
     textAlign(LEFT, TOP); textSize(22);
-    text('Fiume non trovato. Controlla l\'ID nell\'URL o torna all\'overview.', MARGIN, 60);
+    text('Fiume non trovato. Controlla l\'ID nell\'URL o torna all\'overview.', MARGIN, 20);
     return;
   }
 
   drawHeader();        // titolo e dati testuali
-  drawRiver();         // sezione A
-  drawTemperature();   // sezione B
-  drawComparison();    // sezione C
+  drawRiver();         // corso d'acqua (portata + affluenti)
+  drawTemperature();   // temperatura
   drawLegend();        // legenda
 }
 
@@ -96,37 +126,25 @@ function drawHeader() {
   fill(COL.text);
   textStyle(BOLD);
   textSize(28);
-  text(river.name, MARGIN, 24, width - 2 * MARGIN, 80);   // il testo va a capo da solo
+  text(river.name, MARGIN, 0, width - 2 * MARGIN, 80);   // il testo va a capo da solo
 
   textStyle(NORMAL);
   textSize(14);
   fill(COL.cyan);
-  text(river.continent + '  ·  sfocia in: ' + river.outflow, MARGIN, 108);
+  text(river.continent + '  ·  sfocia in: ' + river.outflow, MARGIN, 84);
   fill(COL.text);
-  text('Paesi attraversati: ' + river.countries, MARGIN, 130, width - 2 * MARGIN, 40);
+  text('Paesi attraversati: ' + river.countries, MARGIN, 106, width - 2 * MARGIN, 40);
 }
 
-// Titolo di sezione con filetto
-function sectionTitle(label, y) {
-  stroke(255, 255, 255, 40); strokeWeight(1);
-  line(MARGIN, y, width - MARGIN, y);
-  noStroke(); fill(COL.green);
-  textAlign(LEFT, TOP); textStyle(BOLD); textSize(13);
-  text(label, MARGIN, y + 10);
-  textStyle(NORMAL);
-}
-
-// ---------- A) Corso d'acqua ----------
+// ---------- Corso d'acqua ----------
 function drawRiver() {
-  const top = 180;
-  sectionTitle('A · CORSO D\'ACQUA', top);
-
+  const top = 160;
   const x0 = MARGIN + 10, x1 = width - MARGIN - 10;
-  const cy = top + 150;      // asse centrale del fiume
+  const cy = top + 120;      // asse centrale del fiume
   const amp = 45;            // ampiezza dei meandri
   const waves = 2.5;         // numero di onde
 
-  // Funzione che restituisce l'ordinata del fiume in un punto x
+  // Ordinata del fiume in un punto x
   const riverY = x => cy + amp * sin(map(x, x0, x1, 0, TWO_PI * waves));
 
   // Spessore della linea = portata (scala logaritmica)
@@ -148,9 +166,8 @@ function drawRiver() {
     const len = random(30, 75);
     const slant = random(-25, -8);                // i rami puntano controcorrente
     line(bx, by, bx + slant, by + dir * len);
-    // piccolo punto in cima al ramo
     noStroke(); fill(COL.green);
-    circle(bx + slant, by + dir * len, 5);
+    circle(bx + slant, by + dir * len, 5);        // punto in cima al ramo
     stroke(COL.green);
   }
 
@@ -163,20 +180,18 @@ function drawRiver() {
   for (let x = x0; x <= x1; x += 4) vertex(x, riverY(x));
   endShape();
 
-  // Valori numerici a lato
+  // Valori numerici
   noStroke(); fill(COL.text);
   textAlign(LEFT, TOP); textSize(14);
   text('Portata: ' + fmt(river.discharge) + ' m³/s   ·   Affluenti: ' + fmt(river.tributaries),
-       MARGIN, top + 255);
+       MARGIN, top + 230);
 }
 
-// ---------- B) Temperatura ----------
+// ---------- Temperatura ----------
 function drawTemperature() {
-  const top = 470;
-  sectionTitle('B · TEMPERATURA (°C)', top);
-
+  const top = 420;
   const bx0 = MARGIN + 10, bx1 = width - MARGIN - 10;
-  const barY = top + 70, barH = 26;
+  const barY = top + 50, barH = 26;
   const tx = t => map(t, T_MIN, T_MAX, bx0, bx1);   // temperatura → ascissa
 
   // Asse con tacche ogni 10 °C
@@ -190,7 +205,7 @@ function drawTemperature() {
     text(t, tx(t), barY + barH + 22);
   }
 
-  // Barra min–max colorata con gradiente freddo→caldo (blu → ciano → verde)
+  // Barra min–max con gradiente freddo→caldo (blu → ciano → verde)
   noStroke();
   for (let x = tx(river.minT); x < tx(river.maxT); x += 1) {
     const t = map(x, bx0, bx1, 0, 1);
@@ -216,54 +231,17 @@ function drawTemperature() {
   textStyle(NORMAL);
 }
 
-// ---------- C) Posizione nel dataset ----------
-function drawComparison() {
-  const top = 680;
-  sectionTitle('C · POSIZIONE NEL DATASET (100 FIUMI)', top);
-
-  // Tre grandezze: etichetta, valore, estremi, colore
-  const items = [
-    { label: 'Lunghezza',     key: 'length',    range: stats.len,  unit: 'km',   col: COL.cyan  },
-    { label: 'Area bacino',   key: 'area',      range: stats.area, unit: 'km²',  col: COL.blue  },
-    { label: 'Portata',       key: 'discharge', range: stats.q,    unit: 'm³/s', col: COL.green }
-  ];
-
-  const bx0 = MARGIN + 130, bx1 = width - MARGIN - 160;
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    const y = top + 50 + i * 55;
-    const v = river[it.key];
-
-    // Rango: 1 = il più grande del dataset
-    const rank = all.filter(r => r[it.key] > v).length + 1;
-
-    // Lunghezza di riempimento: scala logaritmica (min 2%)
-    const frac = max(0.02, map(log(v), log(it.range[0]), log(it.range[1]), 0, 1));
-
-    // Etichetta a sinistra
-    noStroke(); fill(COL.text);
-    textAlign(LEFT, CENTER); textSize(14); textStyle(BOLD);
-    text(it.label, MARGIN + 10, y + 10);
-    textStyle(NORMAL);
-
-    // Binario (intero intervallo del dataset) e riempimento
-    fill(255, 255, 255, 25);
-    rect(bx0, y, bx1 - bx0, 20, 4);
-    fill(it.col);
-    rect(bx0, y, (bx1 - bx0) * frac, 20, 4);
-
-    // Valore e rango a destra
-    fill(COL.text); textSize(13);
-    text(fmt(v) + ' ' + it.unit, bx1 + 12, y + 3);
-    fill(it.col); textSize(12);
-    text('n° ' + rank + ' su ' + all.length, bx1 + 12, y + 18);
-  }
-}
-
 // ---------- Legenda ----------
 function drawLegend() {
-  const top = 880;
-  sectionTitle('LEGENDA', top);
+  const top = 600;
+
+  // Filetto e titolo
+  stroke(255, 255, 255, 40); strokeWeight(1);
+  line(MARGIN, top, width - MARGIN, top);
+  noStroke(); fill(COL.text);
+  textAlign(LEFT, TOP); textStyle(BOLD); textSize(13);
+  text('LEGENDA', MARGIN, top + 10);
+  textStyle(NORMAL);
 
   const colW = (width - 2 * MARGIN) / 2;
   const rows = [
@@ -282,17 +260,14 @@ function drawLegend() {
                         } },
       text: 'Barra a gradiente: intervallo di temperatura minima–massima.' },
     { draw: (x, y) => { noStroke(); fill(COL.text); triangle(x + 8, y, x + 22, y, x + 15, y + 12); },
-      text: 'Triangolo bianco: temperatura media.' },
-    { draw: (x, y) => { noStroke(); fill(255, 255, 255, 25); rect(x, y + 1, 30, 12, 3);
-                        fill(COL.cyan); rect(x, y + 1, 18, 12, 3); },
-      text: 'Barre di confronto: posizione tra il minimo e il massimo del dataset (scala log).' }
+      text: 'Triangolo bianco: temperatura media.' }
   ];
 
   textSize(12);
   for (let i = 0; i < rows.length; i++) {
     const col = i % 2, row = floor(i / 2);
     const x = MARGIN + col * colW + 10;
-    const y = top + 40 + row * 44;
+    const y = top + 45 + row * 44;
     rows[i].draw(x, y);
     noStroke(); fill(COL.text);
     textAlign(LEFT, TOP); textStyle(NORMAL);
@@ -300,5 +275,5 @@ function drawLegend() {
   }
 }
 
-// Formatta i numeri all'italiana (separatore delle migliaia)
-function fmt(n) { return n.toLocaleString('it-IT'); }
+// Formatta i numeri all'italiana, con separatore delle migliaia anche sulle 4 cifre
+function fmt(n) { return n.toLocaleString('it-IT', { useGrouping: 'always' }); }

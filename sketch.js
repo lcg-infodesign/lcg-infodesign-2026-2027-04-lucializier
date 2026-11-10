@@ -1,275 +1,310 @@
-/* =====================================================================
-   OVERVIEW – I fiumi del mondo (p5.js v2)
-   Ogni fiume è un glifo "lecca-lecca":
-     • ALTEZZA dello stelo  → lunghezza del fiume (km)
-     • DIAMETRO del cerchio → area del bacino (km²)
-     • COLORE del cerchio   → portata (m³/s), in 3 classi (bonus)
-   Interazione: hover = nome del fiume, click = pagina di dettaglio (?id=)
-   ===================================================================== */
+let myTable;
+let maxLength = 0;
+let maxDischarge = 0;
+let minTemp = 1000;
+let maxTemp = -1000;
+//nomi dei continenti (dataset)
+let continenti = ["Asia", "Europe", "South America", "North America", "Africa", "Oceania"];
+//nomi dei continenti (grafico)
+let nomiContinenti = ["Asia", "Europa", "Sud America", "Nord America", "Africa", "Oceania"];
+//numero di fiumi di ogni continente 
+let numFiumi = [0, 0, 0, 0, 0, 0];
+//posto di ogni fiume lungo il cerchio e continente di ogni fiume
+let postoFiume = [];
+let continenteFiume = [];
+//posto da cui inizia ogni continente
+let inizioContinente = [0, 0, 0, 0, 0, 0];
+//posti vuoti tra continenti
+let spazioTraContinenti = 3;
+let totalePosti = 0;
+//colori temperatura
+let coloreFreddo;
+let coloreMedio;
+let coloreCaldo;
 
-// ---------- Palette ----------
-const COL = {
-  bg:    '#071F26',
-  text:  '#D8F3EA',
-  blue:  '#2D5FEB',
-  cyan:  '#00CDE1',
-  green: '#78F55A'
-};
+//fiume sotto il mouse (indice di riga), usato anche per il click
+let fiumeCliccabile = -1;
 
-// ---------- Parametri di layout ----------
-const MARGIN   = 40;   // margine laterale
-const HEADER_H = 120;  // altezza zona titolo
-const LEGEND_H = 150;  // altezza zona legenda
-const CELL_H   = 118;  // altezza di una cella della griglia
-const STEM_MIN = 8,  STEM_MAX = 70;   // altezza minima/massima dello stelo (px)
-const DIAM_MIN = 6,  DIAM_MAX = 32;   // diametro minimo/massimo del cerchio (px)
-
-// ---------- Dati e stato ----------
-let rivers = [];       // array di oggetti {id, name, length, area, discharge}
-let stats = {};        // minimi e massimi per le scale
-let hovered = null;    // fiume sotto il mouse (o null)
-let grid = {};         // cols, rows, cellW (ricalcolati al resize)
-
-// p5 v2: setup può essere async e loadTable restituisce una Promise
-async function setup() {
-  const table = await loadTable('assets/rivers.csv', ',', 'header');
-
-  // Converto le righe della tabella in oggetti JS semplici
-  for (const row of table.getRows()) {
-    rivers.push({
-      id:        row.getNum('id'),
-      name:      row.getString('name'),
-      length:    row.getNum('length'),
-      area:      row.getNum('area'),
-      discharge: row.getNum('discharge')
-    });
+async function setup() { 
+  createCanvas(windowWidth, windowHeight);
+  myTable = await loadTable("assets/rivers.csv", ",", "header");
+  coloreFreddo = color(45, 95, 235);
+  coloreMedio = color(0, 205, 225);
+  coloreCaldo = color(120, 245, 90);
+  
+  for(let numRiga = 0; numRiga < myTable.getRowCount(); numRiga++){
+    //carico valore lunghezza
+    let length = myTable.getNum(numRiga, "length");
+    if(length > maxLength){
+      maxLength = length
+    }
+    //carico valore portata
+    let discharge = myTable.getNum(numRiga, "discharge");
+    if(discharge > maxDischarge){
+      maxDischarge = discharge
+    }
+    //carico valore temperatura
+    let temp = myTable.getNum(numRiga, "avg_temp");
+    if(temp > maxTemp){
+      maxTemp = temp
+    }
+    if(temp < minTemp){
+      minTemp = temp
+    }
   }
-
-  // Ordino dal più lungo al più corto: la griglia diventa leggibile
-  rivers.sort((a, b) => b.length - a.length);
-
-  // Estremi dei dati, usati dalle scale di mappatura
-  stats = {
-    lenMin:  min(rivers.map(r => r.length)),
-    lenMax:  max(rivers.map(r => r.length)),
-    areaMin: min(rivers.map(r => r.area)),
-    areaMax: max(rivers.map(r => r.area))
-  };
-
-  computeGrid();
-  createCanvas(windowWidth, canvasHeight());
-  textFont('system-ui, sans-serif');
+  
+  //posto lungo il cerchio per ogni fiume
+  let posto = 0;
+  for(let numContinente = 0; numContinente < continenti.length; numContinente++){
+    //posti vuoti prima di ogni continente
+    posto = posto + spazioTraContinenti;
+    inizioContinente[numContinente] = posto;
+    for(let numRiga = 0; numRiga < myTable.getRowCount(); numRiga++){
+      //carico valore continente
+      let continente = myTable.getString(numRiga, "continent");
+      //Australia = Oceania
+      if(continente == "Australia"){
+        continente = "Oceania"
+      }
+      //se il fiume è di questo continente gli assegno il prossimo posto
+      if(continente == continenti[numContinente]){
+        postoFiume[numRiga] = posto;
+        continenteFiume[numRiga] = numContinente;
+        numFiumi[numContinente]++;
+        posto++;
+      }
+    }
+  }
+  totalePosti = posto;
 }
 
-// ---------- Scale di mappatura ----------
-// Uso la radice quadrata: le lunghezze/aree variano di ordini di grandezza,
-// con una scala lineare quasi tutti i fiumi sarebbero invisibili.
-function stemHeight(len) {
-  return map(sqrt(len), sqrt(stats.lenMin), sqrt(stats.lenMax), STEM_MIN, STEM_MAX);
-}
-// Con la radice quadrata del valore, l'AREA del cerchio è proporzionale all'area del bacino
-function circleDiam(area) {
-  const dMax = min(DIAM_MAX, grid.cellW - 8);
-  return map(sqrt(area), sqrt(stats.areaMin), sqrt(stats.areaMax), DIAM_MIN, dMax);
-}
-// Tre classi di portata, associate ai tre colori di accento
-function dischargeColor(q) {
-  if (q < 1000)  return COL.blue;
-  if (q < 10000) return COL.cyan;
-  return COL.green;
-}
-
-// ---------- Layout responsive ----------
-function computeGrid() {
-  grid.cols  = windowWidth >= 1000 ? 20 : (windowWidth >= 600 ? 10 : 5);
-  grid.rows  = ceil(rivers.length / grid.cols);
-  grid.cellW = (windowWidth - 2 * MARGIN) / grid.cols;
-}
-function canvasHeight() {
-  return HEADER_H + grid.rows * CELL_H + LEGEND_H + MARGIN;
-}
-function windowResized() {
-  computeGrid();
-  resizeCanvas(windowWidth, canvasHeight());
-}
-
-// ---------- Draw loop ----------
 function draw() {
-  background(COL.bg);
-  if (rivers.length === 0) return;   // dati non ancora caricati
-
-  drawTitle();
-  hovered = null;
-
-  // Disegno i glifi nella griglia
-  for (let i = 0; i < rivers.length; i++) {
-    const r = rivers[i];
-    const col = i % grid.cols;
-    const row = floor(i / grid.cols);
-
-    // Rettangolo della cella
-    const cx0 = MARGIN + col * grid.cellW;
-    const cy0 = HEADER_H + row * CELL_H;
-    const cx  = cx0 + grid.cellW / 2;      // centro orizzontale del glifo
-    const baseY = cy0 + CELL_H - 10;       // linea di base
-
-    // Hit test: il mouse è dentro questa cella?
-    const isHover = mouseX >= cx0 && mouseX < cx0 + grid.cellW &&
-                    mouseY >= cy0 && mouseY < cy0 + CELL_H;
-    if (isHover) hovered = r;
-
-    drawGlyph(r, cx, baseY, isHover);
+  background(7, 31, 38);
+  //titolo
+  noStroke();
+  fill(216, 243, 234);
+  textAlign(LEFT, TOP);
+  textSize(26);
+  text("I fiumi del mondo in cerchio: lunghezza, portata e temperatura per continente", 40, 30);
+  
+  //misure del grafico
+  let larghezzaLegenda = 300;
+  let cx = larghezzaLegenda + (windowWidth - larghezzaLegenda) / 2;
+  let cy = 110 + (windowHeight - 110) / 2;
+  let raggioEsterno = min((windowWidth - larghezzaLegenda) / 2 - 110, (windowHeight - 110) / 2 - 60);
+  let raggioInterno = raggioEsterno * 0.25;
+  //angolo occupato da ogni posto
+  let passo = TWO_PI / totalePosti;
+  
+  //anelli 2000, 4000 e 6000 km
+  noFill();
+  stroke(255, 255, 255, 45);
+  strokeWeight(1);
+  ellipse(cx, cy, raggioInterno * 2);
+  for(let km = 2000; km <= 6000; km = km + 2000){
+    let raggio = raggioInterno + map(km, 0, maxLength, 0, raggioEsterno - raggioInterno);
+    stroke(255, 255, 255, 45);
+    noFill();
+    ellipse(cx, cy, raggio * 2);
+    //scritta dell'anello, nel vuoto prima del primo continente
+    let angoloScritta = -HALF_PI + passo * spazioTraContinenti / 2;
+    noStroke();
+    fill(216, 243, 234, 170);
+    textSize(11);
+    textAlign(CENTER, CENTER);
+    text(km + " km", cx + cos(angoloScritta) * raggio, cy + sin(angoloScritta) * raggio);
+  }
+  
+  //scritta al centro
+  noStroke();
+  fill(216, 243, 234);
+  textAlign(CENTER, CENTER);
+  textSize(38);
+  text("100", cx, cy - 30);
+  textSize(14);
+  textAlign(CENTER, TOP);
+  text("fiumi più lunghi al mondo", cx - raggioInterno * 0.75, cy - 2, raggioInterno * 1.5);
+  
+  //cerco il fiume il cui cerchio è più vicino al mouse 
+  let fiumeHover = -1;
+  let distanzaMinima = 13;
+  for(let numRiga = 0; numRiga < myTable.getRowCount(); numRiga++){
+    let angolo = -HALF_PI + (postoFiume[numRiga] + 0.5) * passo;
+    let length = myTable.getNum(numRiga, "length");
+    let raggio = raggioInterno + map(length, 0, maxLength, 0, raggioEsterno - raggioInterno);
+    let distanza = dist(mouseX, mouseY, cx + cos(angolo) * raggio, cy + sin(angolo) * raggio);
+    if(distanza < distanzaMinima){
+      distanzaMinima = distanza;
+      fiumeHover = numRiga;
+    }
   }
 
-  drawLegend();
-  if (hovered) drawTooltip(hovered);
-  cursor(hovered ? 'pointer' : 'default');
-}
-
-// Singolo glifo: stelo (lunghezza) + cerchio (area), colore = portata
-function drawGlyph(r, cx, baseY, isHover) {
-  const h = stemHeight(r.length);
-  const d = circleDiam(r.area);
-  const c = isHover ? color(COL.text) : color(dischargeColor(r.discharge));
-
-  // Linea di base (sottile, solo come riferimento visivo)
-  stroke(255, 255, 255, 25);
-  strokeWeight(1);
-  line(cx - grid.cellW / 2 + 6, baseY, cx + grid.cellW / 2 - 6, baseY);
-
-  // Stelo: altezza = lunghezza
-  stroke(c);
-  strokeWeight(isHover ? 3 : 2);
-  line(cx, baseY, cx, baseY - h);
-
-  // Cerchio sopra lo stelo: diametro = area del bacino
+  //salvo il fiume sotto il mouse per il click e cambio il cursore 
+  fiumeCliccabile = fiumeHover;
+  cursor(fiumeHover >= 0 ? 'pointer' : 'default');
+  
+  //testi RollOver 
+  let righeHover = [];
+  for(let numRiga = 0; numRiga < myTable.getRowCount(); numRiga++){
+    //posto del fiume lungo il cerchio
+    let angolo = -HALF_PI + (postoFiume[numRiga] + 0.5) * passo;
+    //lunghezza del raggio = lunghezza
+    let length = myTable.getNum(numRiga, "length");
+    let raggio = raggioInterno + map(length, 0, maxLength, 0, raggioEsterno - raggioInterno);
+    //punto dove inizia il raggio e punto dove finisce
+    let x0 = cx + cos(angolo) * raggioInterno;
+    let y0 = cy + sin(angolo) * raggioInterno;
+    let x1 = cx + cos(angolo) * raggio;
+    let y1 = cy + sin(angolo) * raggio;
+    //diametro del cerchio = portata 
+    let discharge = myTable.getNum(numRiga, "discharge");
+    let diametro = map(sqrt(discharge), 0, sqrt(maxDischarge), 8, 36);
+    //colore = temperatura media 
+    let temp = myTable.getNum(numRiga, "avg_temp");
+    let t = map(temp, minTemp, maxTemp, 0, 1);
+    let colore;
+    if(t < 0.5){
+      colore = lerpColor(coloreFreddo, coloreMedio, t * 2);
+    } else {
+      colore = lerpColor(coloreMedio, coloreCaldo, (t - 0.5) * 2);
+    }
+    
+    //nome del fiume al RollOver (AGGIORNATO)
+    let sopra = (numRiga == fiumeHover);
+    if(sopra){
+      colore = color(255);
+      righeHover = [
+        myTable.getString(numRiga, "name"),
+        "lunghezza " + length + " km",
+        "portata " + discharge + " m³/s"
+      ];
+    }
+    
+    //raggi
+    stroke(colore);
+    if(sopra){
+      strokeWeight(3);
+    } else {
+      strokeWeight(1.5);
+    }
+    line(x0, y0, x1, y1);
+    //cerchi
+    stroke(7, 31, 38);
+    strokeWeight(1.5);
+    fill(colore);
+    ellipse(x1, y1, diametro);
+  }
+  
+  //nomi dei continenti fuori dall'arco
   noStroke();
-  fill(c);
-  circle(cx, baseY - h - d / 2, d);
-}
-
-// Titolo e sottotitolo (elementi di decodifica)
-function drawTitle() {
-  noStroke();
-  fill(COL.text);
+  fill(216, 243, 234);
+  for(let numContinente = 0; numContinente < continenti.length; numContinente++){
+    //archi esterno
+    let angoloInizio = -HALF_PI + inizioContinente[numContinente] * passo;
+    let angoloFine = -HALF_PI + (inizioContinente[numContinente] + numFiumi[numContinente]) * passo;
+    noFill();
+    stroke(216, 243, 234, 140);
+    strokeWeight(4);
+    arc(cx, cy, (raggioEsterno + 22) * 2, (raggioEsterno + 22) * 2, angoloInizio, angoloFine);
+    
+    noStroke();
+    fill(216, 243, 234);
+    let postoCentrale = inizioContinente[numContinente] + numFiumi[numContinente] / 2;
+    let angolo = -HALF_PI + postoCentrale * passo;
+    let x = cx + cos(angolo) * (raggioEsterno + 45);
+    let y = cy + sin(angolo) * (raggioEsterno + 45);
+    
+    //a destra scrivo verso destra, a sinistra verso sinistra, in alto e in basso al centro
+    if(cos(angolo) > 0.3){
+      textAlign(LEFT, CENTER);
+    } else if(cos(angolo) < -0.3){
+      textAlign(RIGHT, CENTER);
+    } else {
+      textAlign(CENTER, CENTER);
+    }
+    
+    textSize(15);
+    // Testo continentale centrato senza il numero dei fiumi (AGGIORNATO)
+    text(nomiContinenti[numContinente], x, y);
+  }
+  
+  //legenda: come leggere il grafico
   textAlign(LEFT, TOP);
-  textStyle(BOLD);
-  textSize(30);
-  text('I fiumi del mondo', MARGIN, 30);
-
-  textStyle(NORMAL);
-  textSize(14);
-  fill(COL.text);
-  text('100 fiumi, ordinati dal più lungo al più corto (lettura da sinistra a destra, dall\'alto in basso).', MARGIN, 72);
-  fill(COL.cyan);
-  text('Passa il mouse su un glifo per vedere il nome · clicca per aprire il dettaglio.', MARGIN, 92);
-}
-
-// Tooltip con il nome del fiume, vicino al cursore
-function drawTooltip(r) {
-  textSize(14);
-  textStyle(BOLD);
-  const padX = 10, padY = 7;
-  const w = textWidth(r.name) + padX * 2;
-  const h = 14 + padY * 2;
-
-  // Tengo il tooltip dentro al canvas
-  let x = constrain(mouseX + 14, 8, width - w - 8);
-  let y = mouseY - h - 12;
-  if (y < 8) y = mouseY + 20;
-
-  fill(COL.bg);
-  stroke(COL.cyan);
-  strokeWeight(1.5);
-  rect(x, y, w, h, 6);
-
-  noStroke();
-  fill(COL.text);
-  textAlign(LEFT, CENTER);
-  text(r.name, x + padX, y + h / 2 + 1);
-  textStyle(NORMAL);
-}
-
-// Legenda: spiega le tre codifiche visive
-function drawLegend() {
-  const y0 = height - LEGEND_H;
-  const colW = max(220, (width - 2 * MARGIN) / 3);
-
-  // Filetto di separazione
-  stroke(255, 255, 255, 40);
-  strokeWeight(1);
-  line(MARGIN, y0, width - MARGIN, y0);
-
-  noStroke();
-  fill(COL.text);
-  textAlign(LEFT, TOP);
-  textStyle(BOLD);
+  fill(216, 243, 234);
+  textSize(15);
+  text("LEGENDA", 40, 130);
   textSize(13);
-  text('LEGENDA', MARGIN, y0 + 12);
-  textStyle(NORMAL);
-
-  const top = y0 + 40;
-
-  // --- 1) Altezza dello stelo = lunghezza ---
-  let x = MARGIN;
-  const baseY = top + 85;
-  const samples = [stats.lenMin, 1500, stats.lenMax];
-  for (let i = 0; i < samples.length; i++) {
-    const sx = x + 10 + i * 28;
-    stroke(COL.text); strokeWeight(2);
-    line(sx, baseY, sx, baseY - stemHeight(samples[i]));
+  text("Ogni raggio è un fiume. I fiumi sono raggruppati per continente: l'arco esterno mostra dove inizia e finisce ciascuno.", 40, 158, 230);
+  text("Lunghezza del raggio = lunghezza del fiume (km)", 40, 238, 230);
+  text("Dimensione del cerchio = portata (m³/s)", 40, 318, 230);
+  
+  //cerchi di esempio per la portata
+  let portateEsempio = [1000, 10000, 100000];
+  for(let i = 0; i < portateEsempio.length; i++){
+    let dEsempio = map(sqrt(portateEsempio[i]), 0, sqrt(maxDischarge), 8, 36);
+    fill(216, 243, 234);
+    ellipse(60 + i * 85, 392, dEsempio);
+    fill(216, 243, 234);
+    textAlign(CENTER, TOP);
+    text(portateEsempio[i], 60 + i * 85, 412);
   }
-  noStroke(); fill(COL.text); textSize(12);
-  text('Altezza dello stelo = lunghezza (km)', x, baseY + 8);
-  fill(COL.cyan);
-  text(fmt(stats.lenMin) + ' → ' + fmt(stats.lenMax) + ' km  (scala radice)', x + 100, baseY - 40);
-
-  // --- 2) Diametro del cerchio = area del bacino ---
-  x = MARGIN + colW;
-  const areas = [stats.areaMin, 500000, stats.areaMax];
-  let cx = x;
-  for (const a of areas) {
-    const d = circleDiam(a);
-    noStroke(); fill(COL.text);
-    circle(cx + d / 2, baseY - 20, d);
-    fill(COL.cyan); textSize(11); textAlign(CENTER, TOP);
-    text(shortNum(a), cx + d / 2, baseY - 20 + max(d / 2, 8) + 3);
-    cx += d + 24;
-    textAlign(LEFT, TOP);
+  
+  textAlign(LEFT, TOP);
+  text("Colore del cerchio = temperatura media in gradi centigradi", 40, 445, 230);
+  //scala dei colori
+  for(let i = 0; i < 220; i++){
+    if(i < 110){
+      fill(lerpColor(coloreFreddo, coloreMedio, i / 110));
+    } else {
+      fill(lerpColor(coloreMedio, coloreCaldo, (i - 110) / 110));
+    }
+    rect(40 + i, 490, 1, 14);
   }
-  fill(COL.text); textSize(12);
-  text('Diametro = area del bacino (km²)', x, baseY + 8);
-
-  // --- 3) Colore = portata ---
-  x = MARGIN + colW * 2;
-  const classes = [
-    { c: COL.blue,  label: '< 1.000 m³/s' },
-    { c: COL.cyan,  label: '1.000 – 10.000 m³/s' },
-    { c: COL.green, label: '> 10.000 m³/s' }
-  ];
-  for (let i = 0; i < classes.length; i++) {
-    const yy = top + i * 20;
-    fill(classes[i].c); noStroke();
-    circle(x + 7, yy + 7, 14);
-    fill(COL.text); textSize(12);
-    text(classes[i].label, x + 22, yy + 1);
+  
+  fill(216, 243, 234);
+  textSize(12);
+  text(minTemp, 40, 510);
+  textAlign(RIGHT, TOP);
+  text(maxTemp, 260, 510);
+  
+  //riquadro con i dettagli del fiume al RollOver
+  if(righeHover.length > 0){
+    textSize(14);
+    //larghezza del riquadro = riga più lunga + un po' di margine
+    let larghezzaBox = max(textWidth(righeHover[0]), textWidth(righeHover[1]), textWidth(righeHover[2])) + 28;
+    //di solito il riquadro sta a destra del mouse...
+    let boxX = mouseX + 15;
+    //...ma nella metà destra della finestra sta a sinistra, così non esce
+    if(mouseX > windowWidth / 2){
+      boxX = mouseX - larghezzaBox - 15;
+    }
+    let boxY = min(mouseY + 15, windowHeight - 90);
+    
+    //riquadro scuro con un bordo verde
+    fill(7, 31, 38);
+    stroke(61, 220, 151);
+    strokeWeight(1);
+    rect(boxX, boxY, larghezzaBox, 76, 8);
+    
+    //testo dentro al riquadro
+    noStroke();
+    fill(216, 243, 234);
+    textAlign(LEFT, CENTER);
+    for(let i = 0; i < righeHover.length; i++){
+      text(righeHover[i], boxX + 14, boxY + 16 + i * 22);
+    }
   }
-  fill(COL.text); textSize(12);
-  text('Colore = portata media', x, baseY + 8);
 }
 
-// ---------- Interazione ----------
-// Click su un glifo → pagina di dettaglio, ID passato come parametro URL
+//click su un fiume: apre la pagina di dettaglio passando l'ID nell'URL
 function mouseClicked() {
-  if (hovered) {
-    window.location.href = 'detail.html?id=' + hovered.id;
+  if (fiumeCliccabile >= 0) {
+    let id = myTable.getNum(fiumeCliccabile, "id");
+    window.location.href = "detail.html?id=" + id;
   }
 }
 
-// ---------- Utilità di formattazione ----------
-function fmt(n) { return n.toLocaleString('it-IT'); }
-function shortNum(n) {
-  if (n >= 1e6) return (n / 1e6).toLocaleString('it-IT', { maximumFractionDigits: 1 }) + ' M';
-  if (n >= 1e3) return (n / 1e3).toLocaleString('it-IT', { maximumFractionDigits: 0 }) + ' mila';
-  return String(n);
+//ridimensiona il canvas con la finestra
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
 }
