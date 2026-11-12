@@ -66,10 +66,22 @@ function draw() {
   noStroke();
   textAlign(LEFT, TOP);
 
-  fill(COL.cyan);
+  // Link "Torna all'overview": con il mouse sopra diventa verde e si sottolinea
+  let linkText = '← Torna all\'overview';
+  let linkColor = COL.cyan;
+  if (overLink()) {
+    linkColor = COL.green;
+  }
+  fill(linkColor);
   textStyle(BOLD);
   textSize(15);
-  text('← Torna all\'overview', MARGIN, 20);
+  text(linkText, MARGIN, 20);
+  if (overLink()) {
+    stroke(linkColor);
+    strokeWeight(1.5);
+    line(MARGIN, 40, MARGIN + textWidth(linkText), 40);  // sottolineatura
+    noStroke();  // ripristino: i testi successivi non devono avere contorno
+  }
 
   drawName();   // nome del fiume
   drawBigNumber();  // numero di affluenti
@@ -203,7 +215,8 @@ function overLink() {
 function mouseClicked() {
   if (overLink()) window.location.href = 'index.html';
 }
-// cursore diventa una manina
+// cursore diventa una manina e la pagina si ridisegna per aggiornare l'effetto hover
 function mouseMoved() {
   cursor(overLink() ? 'pointer' : 'default');
+  redraw();  // serve perché la pagina è in noLoop(): senza, il colore non cambierebbe
 }
