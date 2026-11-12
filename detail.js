@@ -1,14 +1,4 @@
-/* =====================================================================
-   DETTAGLIO – singolo fiume (p5.js v2)
-   Legge ?id= dall'URL, filtra il dataset e mostra:
-     - spessore della linea = portata
-     - numero di rami verdi = affluenti (scala logaritmica)
-     - barra min–max con marcatore della media = temperatura
-   Legenda in fondo alla pagina.
-   ===================================================================== */
-
-// ---------- Palette ----------
-const COL = {
+let COL = {
   bg:    '#071F26',
   text:  '#D8F3EA',
   blue:  '#2D5FEB',
@@ -16,264 +6,204 @@ const COL = {
   green: '#78F55A'
 };
 
-const MARGIN     = 40;
-const TOP_OFFSET = 64;    // spazio riservato in alto per il link "Torna all'overview"
-const CONTENT_H  = 800;   // altezza del contenuto sotto il link
-const T_MIN = -25, T_MAX = 35;   // estremi della scala termica (°C)
+// layout 
+let MARGIN = 40;  
+let HEADER_H = 120;   
+let BOTTOM_MARGIN = 40;   
 
-let all = [];        // tutti i fiumi
-let river = null;    // fiume selezionato (o null se ID non valido)
-let stats = {};      // min/max del dataset per le scale
+let river = null;  // fiume scelto
+let tempMin = Infinity;  // temperatura media più bassa di tutto il dataset
+let tempMax = -Infinity; // temperatura media più alta di tutto il dataset
+let riverColor;    // colore del fiume (temperatura)
 
-// Larghezza utile della finestra (esclude l'eventuale scrollbar verticale)
-function viewW() { return document.documentElement.clientWidth; }
 
 async function setup() {
-  const table = await loadTable('assets/rivers.csv', ',', 'header');
+  let table = await loadTable('assets/rivers.csv', ',', 'header');
 
-  // Trasformo ogni riga in un oggetto con tutti i campi
-  for (const row of table.getRows()) {
-    all.push({
-      id:          row.getNum('id'),
-      name:        row.getString('name'),
-      countries:   row.getString('countries'),
-      length:      row.getNum('length'),
-      area:        row.getNum('area'),
-      discharge:   row.getNum('discharge'),
-      outflow:     row.getString('outflow'),
-      continent:   row.getString('continent'),
-      tributaries: row.getNum('tributaries'),
-      minT:        row.getNum('min_temp'),
-      maxT:        row.getNum('max_temp'),
-      avgT:        row.getNum('avg_temp')
-    });
+  // Leggo ID dall'URL
+  let params = new URLSearchParams(window.location.search);
+  let id = Number(params.get('id'));
+
+  // Scorro tutte le righe del CSV per trovare il fiume con quell'ID e la temperatura minima e massima del dataset 
+  for (let row of table.getRows()) {
+    let temp = row.getNum('avg_temp');
+    tempMin = min(tempMin, temp);
+    tempMax = max(tempMax, temp);
+
+    if (row.getNum('id') === id) {
+      river = {
+        id:          id,
+        name:        row.getString('name'),
+        tributaries: row.getNum('tributaries'),
+        avgT:        temp
+      };
+    }
   }
 
-  // Leggo il parametro ID dall'URL (es. detail.html?id=3) e filtro i dati
-  const params = new URLSearchParams(window.location.search);
-  const id = Number(params.get('id'));
-  river = all.find(r => r.id === id) || null;
+  createCanvas(windowWidth, windowHeight);
 
-  // Estremi del dataset per normalizzare le scale
-  stats = {
-    q:    [min(all.map(r => r.discharge)),   max(all.map(r => r.discharge))],
-    trib: [min(all.map(r => r.tributaries)), max(all.map(r => r.tributaries))]
-  };
+  // Colore del fiume 
+  if (river) riverColor = temperatureColor(river.avgT);
 
-  // Canvas a tutta larghezza, posizionato in alto a sinistra
-  createCanvas(viewW(), CONTENT_H + TOP_OFFSET);
-  const c = document.querySelector('canvas');
-  c.style.position = 'absolute';
-  c.style.left = '0';
-  c.style.top = '0';
-  document.body.style.background = COL.bg;
-  document.body.style.margin = '0';
-
-  setupBackLink();
-  textFont('system-ui, sans-serif');
-  noLoop();   // pagina statica: disegno una volta (e al resize)
+  noLoop();  
 }
 
-// Link "Torna all'overview": usa quello nell'HTML se c'è, altrimenti lo crea.
-// È posizionato nella fascia alta riservata (TOP_OFFSET), quindi non si sovrappone al titolo.
-function setupBackLink() {
-  let a = document.getElementById('back');
-  if (!a) {
-    a = document.createElement('a');
-    a.id = 'back';
-    a.href = 'index.html';
-    a.textContent = '← Torna all\'overview';
-    document.body.appendChild(a);
+
+function temperatureColor(temp) {
+  // t vale 0 per il fiume più freddo, 1 per il più caldo
+  let t = map(temp, tempMin, tempMax, 0, 1);
+  if (t < 0.5) {
+    return lerpColor(color(COL.blue), color(COL.cyan), t * 2);
   }
-  a.style.position = 'absolute';
-  a.style.top = '20px';
-  a.style.left = MARGIN + 'px';
-  a.style.zIndex = '10';
-  a.style.padding = '0';
-  a.style.font = '600 15px system-ui, sans-serif';
-  a.style.color = COL.cyan;
-  a.style.textDecoration = 'none';
+  return lerpColor(color(COL.cyan), color(COL.green), (t - 0.5) * 2);
 }
 
-function windowResized() {
-  resizeCanvas(viewW(), CONTENT_H + TOP_OFFSET);
-  redraw();
-}
 
 function draw() {
   background(COL.bg);
-  translate(0, TOP_OFFSET);   // tutto il contenuto parte sotto il link
 
-  // ID mancante o non valido
-  if (!river) {
-    noStroke(); fill(COL.text);
-    textAlign(LEFT, TOP); textSize(22);
-    text('Fiume non trovato. Controlla l\'ID nell\'URL o torna all\'overview.', MARGIN, 20);
-    return;
-  }
-
-  drawHeader();        // titolo e dati testuali
-  drawRiver();         // corso d'acqua (portata + affluenti)
-  drawTemperature();   // temperatura
-  drawLegend();        // legenda
-}
-
-// ---------- Intestazione ----------
-function drawHeader() {
+  // Impostazioni per tutti i testi
   noStroke();
   textAlign(LEFT, TOP);
 
+  fill(COL.cyan);
+  textStyle(BOLD);
+  textSize(15);
+  text('← Torna all\'overview', MARGIN, 20);
+
+  drawName();   // nome del fiume
+  drawBigNumber();  // numero di affluenti
+  drawRiver();  // disegno del fiume con gli affluenti
+}
+
+// Nome del fiume 
+function drawName() {
   fill(COL.text);
   textStyle(BOLD);
   textSize(28);
-  text(river.name, MARGIN, 0, width - 2 * MARGIN, 80);   // il testo va a capo da solo
-
-  textStyle(NORMAL);
-  textSize(14);
-  fill(COL.cyan);
-  text(river.continent + '  ·  sfocia in: ' + river.outflow, MARGIN, 84);
-  fill(COL.text);
-  text('Paesi attraversati: ' + river.countries, MARGIN, 106, width - 2 * MARGIN, 40);
+  text(river.name, MARGIN, 55, width - 2 * MARGIN, 60);
 }
 
-// ---------- Corso d'acqua ----------
+//Numero di affluenti 
+function drawBigNumber() {
+  let size = 150;
+  let areaH = height - HEADER_H - BOTTOM_MARGIN;
+
+  // Lo centro verticalmente 
+  let y = HEADER_H + areaH / 2 - size * 0.75;
+
+  // stesso colore del fiume
+  textStyle(BOLD);
+  textSize(size);
+  fill(riverColor);
+  text(river.tributaries, MARGIN, y);
+
+  // La parola affluenti
+  textStyle(NORMAL);
+  textSize(20);
+  fill(COL.text);
+  text('affluenti', MARGIN + 4, y + size * 1.1);
+}
+
+
+// disegno del fiume con gli affluenti
 function drawRiver() {
-  const top = 160;
-  const x0 = MARGIN + 10, x1 = width - MARGIN - 10;
-  const cy = top + 120;      // asse centrale del fiume
-  const amp = 45;            // ampiezza dei meandri
-  const waves = 2.5;         // numero di onde
+  let n = river.tributaries;   // quanti rami 
 
-  // Ordinata del fiume in un punto x
-  const riverY = x => cy + amp * sin(map(x, x0, x1, 0, TWO_PI * waves));
+  //Area di disegno
+  let x0 = width * 0.40;                          
+  let x1 = width - MARGIN;                        
+  let areaH = height - HEADER_H - BOTTOM_MARGIN;  
+  let centerY = HEADER_H + areaH / 2;            
 
-  // Spessore della linea = portata (scala logaritmica)
-  const w = map(log(river.discharge), log(stats.q[0]), log(stats.q[1]), 3, 28);
+  // Le curve di bezier 
+  // Il fiume passa per alcuni punti prefissati
+  // bends: quanto ogni punto sale o scende 
+  let bends = [0, -0.04, 0.04, -0.04, 0.04, -0.04, 0.04, 0];
+  let segCount = bends.length - 1; // quante curve (tratti) formano il fiume
+  let dx = (x1 - x0) / segCount;   // larghezza di ogni tratto
 
-  // Affluenti: numero di rami (scala log, da 2 a 40 rami disegnati)
-  const nBranches = round(map(log(river.tributaries), log(stats.trib[0]), log(stats.trib[1]), 2, 40));
+  // Lunghezza dei manici dei punti di controllo 
+  let handle = dx * 0.5;
 
-  // Rami verdi: posizioni uniformi lungo il fiume, alternati sopra/sotto.
-  // randomSeed(id) rende il disegno identico a ogni caricamento.
-  randomSeed(river.id);
-  stroke(COL.green);
-  strokeWeight(2);
-  strokeCap(ROUND);
-  for (let i = 0; i < nBranches; i++) {
-    const bx = map(i, 0, nBranches - 1 || 1, x0 + 20, x1 - 20);
-    const by = riverY(bx);
-    const dir = (i % 2 === 0) ? -1 : 1;           // sopra o sotto
-    const len = random(30, 75);
-    const slant = random(-25, -8);                // i rami puntano controcorrente
-    line(bx, by, bx + slant, by + dir * len);
-    noStroke(); fill(COL.green);
-    circle(bx + slant, by + dir * len, 5);        // punto in cima al ramo
-    stroke(COL.green);
+  // Coordinate dei punti di svolta
+  let xs = [];
+  let ys = [];
+  for (let i = 0; i < bends.length; i++) {
+    xs.push(x0 + dx * i);
+    ys.push(centerY + areaH * bends[i]);
   }
 
-  // Fiume principale: polilinea con spessore = portata
-  noFill();
-  stroke(COL.cyan);
-  strokeWeight(w);
-  strokeJoin(ROUND);
-  beginShape();
-  for (let x = x0; x <= x1; x += 4) vertex(x, riverY(x));
-  endShape();
+  // Ogni tratto è una curva di Bézier dal punto i al punto i+1: bezier(x1, y1,  controllo1x, controllo1y,  controllo2x, controllo2y,  x2, y2)
 
-  // Valori numerici
-  noStroke(); fill(COL.text);
-  textAlign(LEFT, TOP); textSize(14);
-  text('Portata: ' + fmt(river.discharge) + ' m³/s   ·   Affluenti: ' + fmt(river.tributaries),
-       MARGIN, top + 230);
-}
-
-// ---------- Temperatura ----------
-function drawTemperature() {
-  const top = 420;
-  const bx0 = MARGIN + 10, bx1 = width - MARGIN - 10;
-  const barY = top + 50, barH = 26;
-  const tx = t => map(t, T_MIN, T_MAX, bx0, bx1);   // temperatura → ascissa
-
-  // Asse con tacche ogni 10 °C
-  stroke(255, 255, 255, 60); strokeWeight(1);
-  line(bx0, barY + barH + 14, bx1, barY + barH + 14);
-  noStroke(); fill(COL.text); textSize(11); textAlign(CENTER, TOP);
-  for (let t = -20; t <= 30; t += 10) {
-    stroke(255, 255, 255, 60);
-    line(tx(t), barY + barH + 10, tx(t), barY + barH + 18);
-    noStroke();
-    text(t, tx(t), barY + barH + 22);
+  function riverPointAt(pos) {
+    let seg = min(floor(pos), segCount - 1); // in quale tratto siamo
+    let t = pos - seg; // a che punto del tratto (0 → 1)
+    // bezierPoint(a, b, c, d, t) 
+    let x = bezierPoint(xs[seg], xs[seg] + handle, xs[seg + 1] - handle, xs[seg + 1], t);
+    let y = bezierPoint(ys[seg], ys[seg], ys[seg + 1], ys[seg + 1], t);
+    return { x: x, y: y };
   }
 
-  // Barra min–max con gradiente freddo→caldo (blu → ciano → verde)
-  noStroke();
-  for (let x = tx(river.minT); x < tx(river.maxT); x += 1) {
-    const t = map(x, bx0, bx1, 0, 1);
-    const c = t < 0.5 ? lerpColor(color(COL.blue), color(COL.cyan), t * 2)
-                      : lerpColor(color(COL.cyan), color(COL.green), (t - 0.5) * 2);
-    fill(c);
-    rect(x, barY, 1.5, barH);
+  // Quanto sono grandi i rami
+  let branchWidth, maxLen, riverWidth;
+  if (n < 20) {
+    branchWidth = 3;               
+    maxLen      = areaH * 0.40;   
+    riverWidth  = 8;               
+  } else if (n < 100) {
+    branchWidth = 1.5;
+    maxLen      = areaH * 0.32;
+    riverWidth  = 12;
+  } else {
+    branchWidth = 0.7;             
+    maxLen      = areaH * 0.25;    
+    riverWidth  = 16;              
   }
 
-  // Etichette di minima e massima
-  fill(COL.text); textSize(13); textStyle(BOLD);
-  textAlign(RIGHT, CENTER);
-  text(river.minT + ' °C', tx(river.minT) - 8, barY + barH / 2);
-  textAlign(LEFT, CENTER);
-  text(river.maxT + ' °C', tx(river.maxT) + 8, barY + barH / 2);
+  //affluenti) 
+  randomSeed(river.id); // così il disegno è uguale a ogni caricamento
+  stroke(riverColor);
+  strokeWeight(branchWidth);
 
-  // Marcatore della media: triangolo sopra la barra
-  const ax = tx(river.avgT);
-  fill(COL.text);
-  triangle(ax - 7, barY - 16, ax + 7, barY - 16, ax, barY - 3);
-  textAlign(CENTER, BOTTOM);
-  text('media ' + river.avgT + ' °C', ax, barY - 20);
-  textStyle(NORMAL);
-}
+  for (let i = 0; i < n; i++) {
+    // Posizione del ramo lungo il fiume, da sinistra a destra.
+    // Parto dal 15% non dall'inizio
+    let pos = map(i + 0.5, 0, n, 0.15 * segCount, 0.99 * segCount);
+    let p = riverPointAt(pos);   // punto del fiume in cui il ramo si attacca
 
-// ---------- Legenda ----------
-function drawLegend() {
-  const top = 600;
+    // Un ramo sale, il successivo scende, e così via
+    let dir = 1;                   // 1 = verso il basso
+    if (i % 2 === 0) {
+      dir = -1;                    // -1 = verso l'alto
+    }
 
-  // Filetto e titolo
-  stroke(255, 255, 255, 40); strokeWeight(1);
-  line(MARGIN, top, width - MARGIN, top);
-  noStroke(); fill(COL.text);
-  textAlign(LEFT, TOP); textStyle(BOLD); textSize(13);
-  text('LEGENDA', MARGIN, top + 10);
-  textStyle(NORMAL);
+    // Lunghezza del ramo RANDOM
+    let len = maxLen * random(0.4, 1);
 
-  const colW = (width - 2 * MARGIN) / 2;
-  const rows = [
-    { draw: (x, y) => { stroke(COL.cyan); strokeWeight(3); line(x, y + 7, x + 12, y + 7);
-                        strokeWeight(9);  line(x + 16, y + 7, x + 30, y + 7); },
-      text: 'Linea azzurra: il fiume. Più è spessa, più è alta la portata (scala log).' },
-    { draw: (x, y) => { stroke(COL.green); strokeWeight(2); line(x + 4, y + 14, x + 14, y);
-                        line(x + 20, y + 14, x + 28, y + 2); },
-      text: 'Rami verdi: affluenti. Il loro numero cresce con gli affluenti (scala log, max 40).' },
-    { draw: (x, y) => { noStroke();
-                        for (let i = 0; i < 30; i++) {
-                          const t = i / 29;
-                          fill(t < 0.5 ? lerpColor(color(COL.blue), color(COL.cyan), t * 2)
-                                       : lerpColor(color(COL.cyan), color(COL.green), (t - 0.5) * 2));
-                          rect(x + i, y + 1, 1.5, 12);
-                        } },
-      text: 'Barra a gradiente: intervallo di temperatura minima–massima.' },
-    { draw: (x, y) => { noStroke(); fill(COL.text); triangle(x + 8, y, x + 22, y, x + 15, y + 12); },
-      text: 'Triangolo bianco: temperatura media.' }
-  ];
+    // Il ramo parte dal fiume e si allontana in diagonale
+    line(p.x, p.y, p.x - len * 0.5, p.y + dir * len);
+  }
 
-  textSize(12);
-  for (let i = 0; i < rows.length; i++) {
-    const col = i % 2, row = floor(i / 2);
-    const x = MARGIN + col * colW + 10;
-    const y = top + 45 + row * 44;
-    rows[i].draw(x, y);
-    noStroke(); fill(COL.text);
-    textAlign(LEFT, TOP); textStyle(NORMAL);
-    text(rows[i].text, x + 42, y - 2, colW - 70, 40);
+  // fiume principale sopra i rami
+  strokeWeight(riverWidth);
+  noFill();  
+  for (let i = 0; i < segCount; i++) {
+    bezier(xs[i], ys[i],
+           xs[i] + handle, ys[i],          // primo punto di controllo
+           xs[i + 1] - handle, ys[i + 1],  // secondo punto di controllo
+           xs[i + 1], ys[i + 1]);
   }
 }
+//Torna all'overwiew
+function overLink() {
+  return mouseX > MARGIN && mouseX < MARGIN + 180 && mouseY > 15 && mouseY < 42;
+}
 
-// Formatta i numeri all'italiana, con separatore delle migliaia anche sulle 4 cifre
-function fmt(n) { return n.toLocaleString('it-IT', { useGrouping: 'always' }); }
+function mouseClicked() {
+  if (overLink()) window.location.href = 'index.html';
+}
+// cursore diventa una manina
+function mouseMoved() {
+  cursor(overLink() ? 'pointer' : 'default');
+}
