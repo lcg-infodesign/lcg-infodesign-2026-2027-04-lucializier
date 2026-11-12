@@ -296,7 +296,7 @@ function draw() {
   }
 }
 
-//click su un fiume: apre la pagina di dettaglio passando l'ID nell'URL
+//pagina di dettaglio passando l'ID nell'URL
 function mouseClicked() {
   if (fiumeCliccabile >= 0) {
     let id = myTable.getNum(fiumeCliccabile, "id");
